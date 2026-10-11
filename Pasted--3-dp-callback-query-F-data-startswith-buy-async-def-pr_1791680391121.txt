@@ -1,0 +1,91 @@
+# 3. بدء خطوة الدفع اليدوي
+@dp.callback_query(F.data.startswith("buy_"))
+async def process_buy(callback: types.CallbackQuery, state: FSMContext):
+    product_code = callback.data
+    await state.update_data(product=product_code)
+    
+    payment_info = (
+        "💳 **طريقة الدفع اليدوي:**\n"
+        "يرجى تحويل المبلغ عبر فودافون كاش على الرقم التالي:\n"
+        "`01012345678`\n\n"
+        "📸 بعد إتمام التحويل، قم **بإرسال صورة إيصال التحويل (سكرين شوت)** هنا في المحادثة لتأكيد طلبك."
+    )
+    
+    await callback.message.answer(payment_info, parse_mode="Markdown")
+    await state.set_state(OrderState.waiting_for_payment_proof)
+    await callback.answer()
+
+# 4. استقبال صورة الإيصال وتحويلها للأدمن
+@dp.message(OrderState.waiting_for_payment_proof, F.photo)
+async def receive_payment_proof(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    product = user_data.get("product")
+    
+    photo_id = message.photo[-1].file_id
+    user_id = message.from_user.id
+    username = message.from_user.username or "لا يوجد يوزر"
+    
+    # أزرار الموافقة أو الرفض للأدمن
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ قبول وإرسال الكود", callback_data=f"accept_{user_id}_{product}")
+    builder.button(text="❌ رفض الطلب", callback_data=f"reject_{user_id}")
+    builder.adjust(1)
+    
+    # إرسال الإيصال ومعلومات العميل للأدمن
+    admin_text = (
+        f"🚨 **طلب شراء جديد يحتاج مراجعة!**\n\n"
+        f"👤 العميل: @{username} (ID: `{user_id}`)\n"
+        f"📦 المنتج المطلوب: `{product}`"
+    )
+    
+    await bot.send_photo(
+        chat_id=ADMIN_ID,
+        photo=photo_id,
+        caption=admin_text,
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+    
+    await message.answer("✅ تم إرسال إيصال الدفع بنجاح! جاري مراجعته من قِبل الإدارة وسيتم إرسال الكود قريباً.")
+    await state.clear()
+
+# في حال أرسل المستخدم نصاً بدل الصورة أثناء انتظار الإيصال
+@dp.message(OrderState.waiting_for_payment_proof)
+async def not_a_photo(message: types.Message):
+    await message.answer("⚠️ يرجى إرسال **صورة إيصال التحويل** فقط لتأكيد الطلب.")
+
+# 5. تحكم الأدمن (قبول أو رفض الطلب)
+@dp.callback_query(F.data.startswith("accept_"))
+async def admin_accept(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    user_id = int(parts[1])
+    product = parts[2]
+    
+    # كود افتراضي يتم إرساله للعميل عند قبول الأدمن
+    item_code = "FF-ABC123XYZ789" if "ff" in product else "PUBG-XYZ789ABC123"
+    
+    await bot.send_message(
+        chat_id=user_id,
+        text=f"🎉 **تم قبول طلبك بنجاح!**\n\nإليك كود الشحن الخاص بك:\n`{item_code}`\n\nشكراً لتعاملكم معنا ❤️",
+        parse_mode="Markdown"
+    )
+    
+    await callback.message.edit_caption(caption=callback.message.caption + "\n\n✅ **تم قبول الطلب وإرسال الكود للعميل.**")
+    await callback.answer("تم قبول الطلب بنجاح.")
+
+@dp.callback_query(F.data.startswith("reject_"))
+async def admin_reject(callback: types.CallbackQuery):
+    user_id = int(callback.data.split("_")[1])
+    
+    await bot.send_message(
+        chat_id=user_id,
+        text="❌ نأسف، تم رفض طلبك لعدم صحة إيصال الدفع أو عدم وصول التحويل. يرجى التواصل مع الدعم."
+    )
+    
+    await callback.message.edit_caption(caption=callback.message.caption + "\n\n❌ **تم رفض الطلب.**")
+    await callback.answer("تم رفض الطلب.")
+
+# تشغيل البوت
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(dp.start_polling(bot))

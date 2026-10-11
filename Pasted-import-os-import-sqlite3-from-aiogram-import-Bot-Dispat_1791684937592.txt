@@ -1,0 +1,293 @@
+import os
+import sqlite3
+from aiogram import Bot, Dispatcher, executor, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, BotCommand
+
+API_TOKEN = os.getenv('BOT_TOKEN')
+ADMIN_ID = os.getenv('ADMIN_ID')
+
+if ADMIN_ID:
+    ADMIN_ID = int(ADMIN_ID)
+
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
+
+def init_db():
+    conn = sqlite3.connect('store.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS products (
+            id TEXT PRIMARY KEY,
+            price REAL,
+            currency TEXT,
+            name TEXT,
+            category TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS orders (
+            order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            product_id TEXT,
+            product_name TEXT,
+            price REAL,
+            currency TEXT,
+            status TEXT,
+            player_id TEXT DEFAULT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def is_admin(user_id: int) -> bool:
+    return user_id == ADMIN_ID
+
+# ضبط قائمة الأوامر الرسمية
+async def on_startup(dp):
+    commands = [
+        BotCommand(command="start", description="Launch the bot and main menu"),
+        BotCommand(command="store", description="Choose between Codes or Direct ID Top-up"),
+        BotCommand(command="help", description="Technical Support & Contact")
+    ]
+    await bot.set_my_commands(commands)
+
+@dp.message_handler(commands=['start'])
+async def send_welcome(message: types.Message):
+    msg = (
+        "🔥 **Welcome to Game Codes & Top-Up Store!** 🎮⚡\n\n"
+        "Choose your preferred service from below:\n"
+        "• /store - Open main store (Codes & Direct ID Top-up)\n"
+        "• /help - Contact technical support (@GUODA36)"
+    )
+    if is_admin(message.from_user.id):
+        msg += (
+            "\n\n🛠 **Admin Control Panel:**\n"
+            "/addproduct <id> <price> <currency> <name>\n"
+            "/setpayment <instructions>\n"
+            "/orders - View pending orders\n"
+            "/deliver <order_id> <real_code>"
+        )
+    await message.reply(msg, parse_mode="Markdown")
+
+@dp.message_handler(commands=['help'])
+async def send_help(message: types.Message):
+    await message.reply("For technical support and reporting any issues, please contact:\n@GUODA36")
+
+@dp.message_handler(commands=['store', 'products'])
+async def show_main_store(message: types.Message):
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        InlineKeyboardButton("🛒 Digital Game Codes", callback_data="main_codes"),
+        InlineKeyboardButton("⚡ Direct Player ID Top-Up", callback_data="main_direct_id")
+    )
+    await message.reply("请 اختر نوع الخدمة المطلوبة / Choose your service:", reply_markup=keyboard)
+
+# القائمة الرئيسية لاختيار نوع الخدمة
+@dp.callback_query_handler(lambda c: c.data in ['main_codes', 'main_direct_id', 'back_to_main'])
+async def process_main_menu(callback_query: types.CallbackQuery):
+    if callback_query.data == 'back_to_main' or callback_query.data == 'main_codes':
+        if callback_query.data == 'back_to_main':
+            keyboard = InlineKeyboardMarkup(row_width=1)
+            keyboard.add(
+                InlineKeyboardButton("🛒 Digital Game Codes", callback_data="main_codes"),
+                InlineKeyboardButton("⚡ Direct Player ID Top-Up", callback_data="main_direct_id")
+            )
+            await callback_query.message.edit_text("Choose your service:", reply_markup=keyboard)
+            return
+        
+        # عرض أقسام الأكواد (فری فایر وببجي)
+        keyboard = InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            InlineKeyboardButton("🔥 Free Fire Codes", callback_data="cat_ff"),
+            InlineKeyboardButton("⚡ PUBG Mobile Codes", callback_data="cat_pubg"),
+            InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="back_to_main")
+        )
+        await callback_query.message.edit_text("Choose game for Digital Codes:", reply_markup=keyboard)
+
+    elif callback_query.data == 'main_direct_id':
+        # عرض أقسام الشحن المباشر بالـ ID
+        keyboard = InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            InlineKeyboardButton("🔥 Free Fire (Direct ID)", callback_data="dir_ff"),
+            InlineKeyboardButton("⚡ PUBG Mobile (Direct ID)", callback_data="dir_pubg"),
+            InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="back_to_main")
+        )
+        await callback_query.message.edit_text("Choose game for Direct ID Top-Up:", reply_markup=keyboard)
+
+# تصفح أقسام الأكواد
+@dp.callback_query_handler(lambda c: c.data.startswith('cat_'))
+async def process_category_codes(callback_query: types.CallbackQuery):
+    cat = callback_query.data.split('_')[1]
+    conn = sqlite3.connect('store.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, price, currency, name FROM products WHERE id LIKE ?", (f"{cat}-%",))
+    products = cursor.fetchall()
+    conn.close()
+
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    if not products:
+        keyboard.add(InlineKeyboardButton("⬅️ Back", callback_data="main_codes"))
+        await callback_query.message.edit_text("No products available in this category currently.", reply_markup=keyboard)
+        return
+
+    for prod in products:
+        prod_id, price, currency, name = prod
+        keyboard.add(InlineKeyboardButton(f"{name} — {price} {currency}", callback_data=f"buy_{prod_id}"))
+    
+    keyboard.add(InlineKeyboardButton("⬅️ Back", callback_data="main_codes"))
+    cat_name = "Free Fire" if cat == "ff" else "PUBG Mobile"
+    await callback_query.message.edit_text(f"Select a product ({cat_name} Codes):", reply_markup=keyboard)
+
+# تصفح الشحن المباشر بالـ ID (كمثال ألعاب أو باقات شحن بالـ ID)
+@dp.callback_query_handler(lambda c: c.data.startswith('dir_'))
+async def process_category_direct(callback_query: types.CallbackQuery):
+    game = callback_query.data.split('_')[1]
+    game_name = "Free Fire" if game == "ff" else "PUBG Mobile"
+    
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    # أمثلة لخدمات الشحن المباشر (يمكنك تعديلها أو ربطها بقاعدة البيانات)
+    keyboard.add(
+        InlineKeyboardButton(f"{game_name} Direct Top-Up (Send ID)", callback_data=f"start_dir_order_{game}"),
+        InlineKeyboardButton("⬅️ Back", callback_data="main_direct_id")
+    )
+    await callback_query.message.edit_text(f"⚡ **{game_name} Direct ID Top-Up**\nClick below to submit your Player ID and request top-up via Admin (@GUODA36):", reply_markup=keyboard, parse_mode="Markdown")
+
+# بدء طلب الشحن المباشر بالـ ID
+@dp.callback_query_handler(lambda c: c.data.startswith('start_dir_order_'))
+async def start_direct_order(callback_query: types.CallbackQuery):
+    game = callback_query.data.split('_')[3]
+    await callback_query.message.answer(f"Please reply with your Player ID for {game.upper()} (e.g., `123456789`), followed by the package you want.")
+    await callback_query.answer()
+
+# شراء الأكواد العادية
+@dp.callback_query_handler(lambda c: c.data.startswith('buy_'))
+async def process_buy(callback_query: types.CallbackQuery):
+    prod_id = callback_query.data.split('_', 1)[1]
+    conn = sqlite3.connect('store.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, price, currency, name FROM products WHERE id = ?", (prod_id,))
+    prod = cursor.fetchone()
+    cursor.execute("SELECT value FROM settings WHERE key = 'payment'")
+    payment = cursor.fetchone()
+    
+    if not prod:
+        await callback_query.answer("Product not found.", show_alert=True)
+        conn.close()
+        return
+
+    p_id, price, currency, name = prod
+    user = callback_query.from_user
+    cursor.execute("INSERT INTO orders (user_id, username, product_id, product_name, price, currency, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
+                   (user.id, user.username or user.first_name, p_id, name, price, currency))
+    order_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    pay_text = payment[0] if payment else "Please contact admin (@GUODA36) to pay."
+    msg = (
+        f"Order #{order_id}: {name} — {price} {currency}\n\n"
+        f"Payment Instructions:\n{pay_text}\n\n"
+        "After transferring, send a photo of the receipt here for review."
+    )
+    await callback_query.message.edit_text(msg)
+
+@dp.message_handler(content_types=types.ContentType.PHOTO)
+async def handle_receipt(message: types.Message):
+    conn = sqlite3.connect('store.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT order_id, product_name FROM orders WHERE user_id = ? AND status = 'pending' ORDER BY order_id DESC LIMIT 1", (message.from_user.id,))
+    order = cursor.fetchone()
+    conn.close()
+
+    if not order:
+        await message.reply("No pending orders found. Please use /store first.")
+        return
+
+    order_id, prod_name = order
+    await message.reply("Receipt sent to management for review. It will be processed soon.")
+
+    if ADMIN_ID:
+        caption = f"New Order for Review — #{order_id}\nUser: @{message.from_user.username or message.from_user.first_name} (ID: {message.from_user.id})\nProduct: {prod_name}"
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(
+            InlineKeyboardButton("Approve & Deliver", callback_data=f"approve_{order_id}"),
+            InlineKeyboardButton("Reject Order", callback_data=f"reject_{order_id}")
+        )
+        await bot.send_photo(ADMIN_ID, message.photo[-1].file_id, caption=caption, reply_markup=keyboard)
+
+@dp.callback_query_handler(lambda c: c.data.startswith('approve_') or c.data.startswith('reject_'))
+async def process_admin_action(callback_query: types.CallbackQuery):
+    if not is_admin(callback_query.from_user.id):
+        return
+    action, order_id_str = callback_query.data.split('_')
+    order_id = int(order_id_str)
+
+    conn = sqlite3.connect('store.db')
+    cursor = conn.cursor()
+
+    if action == 'approve':
+        cursor.execute("UPDATE orders SET status = 'approved' WHERE order_id = ?", (order_id,))
+        conn.commit()
+        await callback_query.message.reply(f"Order #{order_id} approved. Send the code/confirmation using:\n`/deliver {order_id} <details>`", parse_mode="Markdown")
+        await callback_query.answer("Approved.")
+    else:
+        cursor.execute("SELECT user_id FROM orders WHERE order_id = ?", (order_id,))
+        res = cursor.fetchone()
+        cursor.execute("UPDATE orders SET status = 'rejected' WHERE order_id = ?", (order_id,))
+        conn.commit()
+        if res:
+            try:
+                await bot.send_message(res[0], "Sorry, your order has been rejected. Please contact support @GUODA36.")
+            except Exception:
+                pass
+        await callback_query.message.reply(f"Order #{order_id} rejected.")
+        await callback_query.answer("Rejected.")
+    conn.close()
+
+@dp.message_handler(commands=['deliver'])
+async def deliver_code(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.reply("Usage: /deliver <order_id> <details/code>")
+        return
+    order_id_str, details = parts[1], parts[2]
+    try:
+        order_id = int(order_id_str)
+    except ValueError:
+        await message.reply("Invalid order ID.")
+        return
+
+    conn = sqlite3.connect('store.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, status FROM orders WHERE order_id = ?", (order_id,))
+    res = cursor.fetchone()
+
+    if not res or res[1] != 'approved':
+        await message.reply("Order not found or not approved yet.")
+        conn.close()
+        return
+
+    user_id = res[0]
+    cursor.execute("UPDATE orders SET status = 'delivered' WHERE order_id = ?", (order_id,))
+    conn.commit()
+    conn.close()
+
+    try:
+        await bot.send_message(user_id, f"Your order has been completed/delivered:\n`{details}`", parse_mode="Markdown")
+        await message.reply(f"Order #{order_id} fulfilled successfully.")
+    except Exception as e:
+        await message.reply(f"Failed to send to customer: {e}")
+
+if __name__ == '__main__':
+    executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
